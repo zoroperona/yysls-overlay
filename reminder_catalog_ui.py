@@ -2,7 +2,6 @@
 import tkinter as tk
 from tkinter import ttk, messagebox
 
-import numpy as np
 from PIL import Image
 
 from reminder_catalog import CatalogMonitor, load_catalog
@@ -40,7 +39,12 @@ class CatalogUI:
         win.title('监控列表 · 可同时勾选多项')
         body = ttk.Frame(win, padding=12)
         body.pack(fill='both', expand=True)
-        ttk.Label(body, text='勾选后为每项设置区域；新增图标请在亮起时校准。修改设置会停止当前监测。').pack(anchor='w')
+        ttk.Label(body, text='只需框选 Debuff 栏区和奇术区；按类别共享区域，技能可多选。').pack(anchor='w')
+        regions = ttk.Frame(body)
+        regions.pack(fill='x', pady=8)
+        for category, name in (('debuff', 'Debuff 栏区'), ('qishu', '奇术区')):
+            ttk.Button(regions, text='框选'+name, command=lambda c=category: self.setup_region(c)).pack(side='left', padx=6)
+            ttk.Label(regions, text='已设置' if self.engine.region(category) else '待设置').pack(side='left', padx=6)
         canvas = tk.Canvas(body, width=720, height=360, highlightthickness=0)
         scroll = ttk.Scrollbar(body, orient='vertical', command=canvas.yview)
         canvas.configure(yscrollcommand=scroll.set)
@@ -56,7 +60,7 @@ class CatalogUI:
                             command=lambda s=skill, v=enabled: self.set_enabled(s, v.get())).grid(row=row, column=0, sticky='w', pady=10)
             text = f'{skill.school} · {"持续" if skill.kind == "buff" else "冷却"} {skill.cd:g} 秒'
             ttk.Label(rows, text=text).grid(row=row, column=1, sticky='w', padx=12)
-            ttk.Button(rows, text='设置检测区域', command=lambda s=skill: self.setup(s)).grid(row=row, column=2, padx=8)
+            ttk.Label(rows, text='Debuff 栏区' if skill.category == 'debuff' else '奇术区').grid(row=row, column=2, padx=8)
             label = ttk.Label(rows, text=self.status_text(skill), width=25)
             label.grid(row=row, column=3, sticky='w')
             self.labels[skill.id] = label
@@ -76,71 +80,58 @@ class CatalogUI:
         self.engine.reset()
 
     def status_text(self, skill):
-        if skill.engine == 'legacy_loss':
-            return '共用敌方 Buff 栏选区'
-        if skill.engine == 'legacy_dizi':
-            return '已设置' if self.app.dizi_detector.configured else '待设置'
-        return '已校准' if self.engine.calibration(skill) else '待校准'
+        return '已设置共享区域' if self.engine.region(skill.category) else '待框选共享区域'
 
-    def setup(self, skill):
+    def setup_region(self, category):
         self.app.stop_monitor()
-        if skill.engine == 'legacy_loss':
-            self.app.select_roi()
-            return
-        if skill.engine == 'legacy_dizi':
-            self.app.setup_dizi()
-            return
-        messagebox.showinfo('校准 '+skill.name,
-                            '请让图标处于亮起状态。确定后 5 秒截图，紧贴完整图案框选，Enter 确认。\n'
-                            '请避开倒计时数字和邻近图标。每项保存独立检测区域，位置变化后需要重新设置。', parent=self.app.root)
+        name = 'Debuff 栏区' if category == 'debuff' else '奇术区'
+        messagebox.showinfo('框选 '+name,
+                            '确定后 5 秒冻结截图，请框住整个'+name+'，四周留少量余量。\n'
+                            '该类别的所有勾选技能会在同一区域内搜索，无需逐个框选或校准。Enter 确认，Esc 取消。', parent=self.app.root)
         if self.app.overlay is not None:
             self.app._hide_overlay(self.app.overlay)
-        if self.dialog is not None:
-            self.dialog.withdraw()
-        self.app.root.iconify()
-        self.app.root.after(5000, lambda: self.capture_setup(skill))
-
-    def capture_setup(self, skill):
-        try:
-            shot = self.app.capture.full_screen()
-            self.app.root.deiconify()
-            def selected(box):
-                try:
-                    ox, oy = shot.info.get('screen_origin', (0, 0))
-                    x0, y0, x1, y1 = box
-                    rgb = np.asarray(shot.crop((x0-ox, y0-oy, x1-ox, y1-oy)).convert('RGB'))
-                    value = self.engine.matchers[skill.id].calibrate(rgb, box)
-                    value['icon'] = skill.icon
-                    calibrations = dict(self.app.cfg.get('skill_calibrations', {}))
-                    calibrations[skill.id] = value
-                    self.app.cfg['skill_calibrations'] = calibrations
-                    self.save(self.app.cfg)
-                    messagebox.showinfo('校准完成', skill.name+' 已保存，可在监控列表勾选后开始监测。', parent=self.app.root)
-                except (ValueError, OSError) as exc:
-                    messagebox.showerror('校准失败', str(exc), parent=self.app.root)
-            self.selector(self.app.root, shot, '框选亮起的 '+skill.name, selected,
-                          min_w=6, min_h=6, confirm_on_enter=True)
-        except Exception as exc:
-            self.app.root.deiconify()
-            messagebox.showerror('截图失败', str(exc), parent=self.app.root)
-        # Reopening the list refreshes calibration labels and checkbox state.
         if self.dialog is not None:
             self.dialog.destroy()
             self.dialog = None
             self.labels = {}
+        self.app.root.iconify()
+        self.app.root.after(5000, lambda: self.capture_region(category))
+
+    def set_region(self, category, box):
+        key = {'debuff': 'loss_roi', 'qishu': 'qishu_roi'}[category]
+        self.app.cfg[key] = list(map(int, box))
+        self.save(self.app.cfg)
+        self.engine.reset()
+        self.app._update_summary()
+
+    def capture_region(self, category):
+        try:
+            shot = self.app.capture.full_screen()
+            self.app.root.deiconify()
+            name = 'Debuff 栏区' if category == 'debuff' else '奇术区'
+            self.selector(self.app.root, shot, '框选整个 '+name,
+                          lambda box: self.set_region(category, box),
+                          min_w=43 if category == 'debuff' else 12,
+                          min_h=63 if category == 'debuff' else 12,
+                          confirm_on_enter=True)
+        except Exception as exc:
+            self.app.root.deiconify()
+            messagebox.showerror('截图失败', str(exc), parent=self.app.root)
 
     def validate_start(self):
         self.apply_defaults()
         enabled = [s for s in self.skills if self.engine.enabled(s)]
         if not enabled:
             raise ValueError('请在监控列表中至少勾选一项')
-        missing = [s.name for s in enabled if s.engine == 'generic' and not self.engine.calibration(s)]
+        missing = [('Debuff 栏区' if c == 'debuff' else '奇术区') for c in ('debuff', 'qishu')
+                   if any(s.category == c for s in enabled) and not self.engine.region(c)]
         if missing:
             raise ValueError('请先设置检测区域：'+ '、'.join(missing))
         self.engine.reset()
 
     def handle(self, results):
         alerts = []
+        generic_audio = False
         by_id = {s.id: s for s in self.skills}
         for result in results:
             skill = by_id[result['id']]
@@ -160,20 +151,32 @@ class CatalogUI:
             label = self.labels.get(skill.id)
             if label is not None and label.winfo_exists():
                 label.configure(text=text)
+            if skill.engine == 'legacy_dizi':
+                self.app.vars['dizi'].set(text)
+                last_alert = result.get('last_alert')
+                repeat = (None if last_alert is None or not result.get('ready') else
+                          max(0, float(self.app.cfg.get('dizi_repeat_interval', 25))-(result['observed']-last_alert)))
+                self.app.vars['dizi_repeat'].set('-' if repeat is None else f'{repeat:.1f} s')
+                if result.get('event') in ('ready', 'repeat'):
+                    self.app._dizi_audio()
+                    alerts.append(self.app._reminder_text('dizi', 0))
+                continue
             if result.get('event') == 'ready':
                 alerts.append(skill.name+'可用')
+                generic_audio = True
             elif result.get('event') == 'expiring':
                 alerts.append(f"{skill.name}还剩 {result['remaining']:.1f} 秒")
+                generic_audio = True
         if alerts:
             # Generic reminders use an electronic sound; never play another skill's voice.
-            if self.app.cfg.get('audio_enabled', True):
+            if generic_audio and self.app.cfg.get('audio_enabled', True):
                 self.app._play_catalog_audio()
             self.app.show_visual_reminder('\n'.join(alerts))
 
     def icon_items(self, now, preview, preview_started):
         result = []
         for skill in self.skills:
-            if skill.engine != 'generic' or not self.engine.enabled(skill):
+            if skill.engine == 'legacy_loss' or not self.engine.enabled(skill):
                 continue
             state = self.engine.latest.get(skill.id, {})
             remaining = state.get('remaining')

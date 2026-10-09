@@ -41,7 +41,7 @@ from tkinter import colorchooser, filedialog, messagebox, ttk
 
 
 APP_NAME = "尘Buff提醒器_追踪明度版"
-APP_VERSION = "v2.6 多技能监控"
+APP_VERSION = "v2.6.1 双区域监控"
 ICON_W = 43
 ICON_H = 63
 
@@ -95,7 +95,10 @@ HOTKEY_CHOICES = tuple(HOTKEY_VK.keys())
 
 DEFAULT_CONFIG = {
     # Screen / basic
-    "loss_roi": [350, 10, 1000, 130],
+    "loss_roi": [],
+    "qishu_roi": [],
+    "catalog_hz": 10,
+    "catalog_match_threshold": .80,
     "global_fps": 3,
     "global_step": 2,
     "loss_icon_width": 48,
@@ -1299,12 +1302,12 @@ PARAM_TABS = {
         ("refresh_phase_jump", "刷新扇区最小回跳比例", float, .125, .75),
         ("refresh_observation_gap", "短暂掉锁保留基线 秒", float, .2, 5),
     ],
-    "笛子检测": [
-        ("dizi_hz", "目标检测频率 Hz", int, 3, 40),
-        ("dizi_presence_threshold", "图标仍在的最低形状分数", float, .1, .9),
-        ("dizi_white_threshold", "可用白色像素阈值", int, 100, 255),
-        ("dizi_ready_on", "可用像素比例", float, .1, 1),
-        ("dizi_ready_off", "使用后像素比例", float, 0, .9),
+    "共享区 / 笛子": [
+        ("catalog_hz", "共享区目标检测频率 Hz", int, 3, 40),
+        ("catalog_match_threshold", "共享区原图最低匹配分数", float, .7, .99),
+        ("dizi_white_threshold", "共享图标可用参考亮度", int, 100, 255),
+        ("dizi_ready_on", "笛子可用相对亮度", float, .1, 1),
+        ("dizi_ready_off", "笛子使用后相对亮度", float, 0, .9),
         ("dizi_ready_frames", "可用连续确认帧", int, 1, 10),
         ("dizi_off_frames", "使用连续确认帧", int, 2, 10),
     ],
@@ -1586,7 +1589,7 @@ class ReminderApp:
         self.start_btn = ttk.Button(actions, text="开始监测", command=self.toggle)
         self.start_btn.pack(side="left")
         ttk.Button(actions, text="监控列表", command=self.catalog.open).pack(side="left", padx=6)
-        ttk.Button(actions, text="框选敌方 Buff 栏", command=self.select_roi).pack(
+        ttk.Button(actions, text="框选 Debuff 栏区", command=self.select_roi).pack(
             side="left", padx=6
         )
         ttk.Button(actions, text="手动起轴", command=self.manual_axis).pack(
@@ -1661,7 +1664,7 @@ class ReminderApp:
         ttk.Label(quick, text="拖动浮层保存位置；失魂、笛子分别配音",
                   foreground="#666").grid(row=3, column=2, columnspan=3, sticky="w", pady=(9, 0))
 
-        dizi = ttk.LabelFrame(outer, text="笛子提醒", padding=10)
+        dizi = ttk.LabelFrame(outer, text="奇术区 / 笛子提醒", padding=10)
         dizi.pack(fill="x", pady=6)
         dizi.columnconfigure(2, weight=1)
 
@@ -1674,7 +1677,7 @@ class ReminderApp:
         ).grid(row=0, column=0, sticky="w")
 
         ttk.Button(
-            dizi, text="设置笛子图标（5秒自动截图）",
+            dizi, text="框选奇术区（5秒自动截图）",
             command=self.setup_dizi
         ).grid(row=0, column=1, padx=(12, 16), sticky="w")
 
@@ -1766,8 +1769,8 @@ class ReminderApp:
             (f"识别模板未就绪：{self.template_error}（可测试浮层与音效；监测前请补齐模板）"
              if self.template_error else ("识别模板：游戏原图（遮罩自动生成）" if self.tracker.original_assets is not None
                    else "识别模板：旧版自定义 Sobel")),
-            f"敌方 Buff 搜索区（已保存）：{roi}",
-            f"笛子区域（已保存）：{self.dizi_detector.roi or '尚未设置'}",
+            f"Debuff 栏共享区域（已保存）：{roi}",
+            f"奇术共享区域（已保存）：{self.catalog.engine.region('qishu') or '尚未设置'}",
             "",
             "当前关键参数：",
             f"• 追踪频率 {self.cfg['track_hz']} Hz",
@@ -1780,7 +1783,7 @@ class ReminderApp:
             f"• 自定义音频：{audio if audio else '内置提示音'}",
             f"• 暂停 / 继续快捷键：{self.cfg.get('pause_hotkey', 'NumLock')}（全局）",
             f"• 笛子：{'启用' if self.cfg.get('dizi_enabled', True) else '关闭'}｜"
-            f"模板{'已设置' if self.dizi_detector.configured else '未设置'}｜"
+            f"奇术区{'已设置' if self.catalog.engine.region('qishu') else '未设置'}｜"
             f"持续可用每 {float(self.cfg.get('dizi_repeat_interval',25.0)):.0f}s 重复提醒",
         ]
         self.summary.configure(state="normal")
@@ -1792,8 +1795,8 @@ class ReminderApp:
         )
         if hasattr(self, "dizi_setup_text"):
             self.dizi_setup_text.configure(
-                text=("✓ 已设置笛子模板" if self.dizi_detector.configured
-                      else "尚未设置笛子模板")
+                text=("✓ 已设置奇术共享区域" if self.catalog.engine.region("qishu")
+                      else "尚未框选奇术区")
             )
 
     def apply_quick(self):
@@ -1932,83 +1935,7 @@ class ReminderApp:
         self.dizi_detector.cfg = self.cfg
 
     def setup_dizi(self):
-        if self.worker and self.worker.is_alive():
-            self.stop_monitor()
-        messagebox.showinfo(
-            "设置笛子",
-            "请先让笛子处于【可用、白色亮起】状态。\\n\\n"
-            "点“确定”后程序会缩到后台，5 秒后自动截屏。\\n"
-            "期间不需要按任何键。截屏后会出现冻结画面。\n"
-            "鼠标拖动框选笛子，Enter 确认，Esc 取消。",
-            parent=self.root
-        )
-        self.root.iconify()
-        self.root.after(5000, self._capture_dizi_setup)
-
-    def _capture_dizi_setup(self):
-        try:
-            shot = self.capture.full_screen()
-            self._dizi_setup_shot = shot
-            self.root.deiconify()
-            self.root.lift()
-            RegionSelector(
-                self.root,
-                shot,
-                "框选【可用状态】的笛子图标",
-                self._set_dizi_roi,
-                min_w=6,
-                min_h=6,
-                confirm_on_enter=True,
-            )
-        except Exception as e:
-            self.root.deiconify()
-            messagebox.showerror("笛子截屏失败", str(e), parent=self.root)
-
-    def _set_dizi_roi(self, box):
-        shot = self._dizi_setup_shot
-        self._dizi_setup_shot = None
-        if shot is None:
-            messagebox.showerror("设置失败", "冻结截图已经丢失，请重新设置。", parent=self.root)
-            return
-
-        x0, y0, x1, y1 = map(int, box)
-        if x1 <= x0 or y1 <= y0:
-            return
-
-        # Selector returns physical desktop coordinates, including multi-monitor origin.
-        ox, oy = shot.info.get("screen_origin", (0, 0))
-        rx0, ry0, rx1, ry1 = x0-ox, y0-oy, x1-ox, y1-oy
-
-        crop = np.asarray(shot.crop((rx0, ry0, rx1, ry1)).convert("RGB"), dtype=np.uint8)
-        threshold = int(self.cfg.get("dizi_white_threshold", 225))
-        try:
-            mask = OriginalAssets(ROOT).calibrate_dizi(crop, threshold)
-        except (OSError, ValueError) as exc:
-            messagebox.showerror("笛子校准失败", str(exc), parent=self.root)
-            return
-        white_pixels = int(np.count_nonzero(mask))
-        if white_pixels < 20:
-            messagebox.showerror(
-                "模板白像素太少",
-                f"只找到 {white_pixels} 个灰度 ≥ {threshold} 的像素。\\n"
-                "请确认截屏时笛子处于可用白色状态，并重新框选。",
-                parent=self.root
-            )
-            return
-
-        self.cfg["dizi_calibration"] = {"roi": [x0, y0, x1, y1],
-                                        "mask": mask.astype(np.uint8).tolist(),
-                                        "source": "yysls_export/dizi.png"}
-        save_config(self.cfg)
-        self.dizi_detector = DiziDetector(self.cfg)
-        self._update_summary()
-        messagebox.showinfo(
-            "笛子设置完成",
-            f"模板白像素：{white_pixels}\\n"
-            f"识别阈值：灰度 ≥ {threshold}\\n"
-            "之后直接开始监测即可。",
-            parent=self.root
-        )
+        self.catalog.setup_region('qishu')
 
     def _reminder_text(self, kind, seconds):
         return format_reminder(self.cfg.get(kind+"_text", "{%s} {%d}"), seconds,
@@ -2159,22 +2086,12 @@ class ReminderApp:
         now = time.monotonic()
         loss_duration = float(self.cfg.get("loss_duration", 21))
         remaining = None if self.axis_start is None else max(0, loss_duration-(now-self.axis_start))
-        dizi_remaining, dizi_duration, dizi_ready = dizi_icon_state(
-            self.cfg, self.dizi_detector.is_ready, self.dizi_detector.last_alert_time,
-            self.dizi_detector.cooldown_start, now)
         if self.overlay_preview:
             remaining = loss_duration-((now-self._icon_preview_started) % loss_duration)
-            dizi_duration = max(0., float(self.cfg.get("dizi_cooldown_seconds", 0)))
-            dizi_remaining = (dizi_duration-((now-self._icon_preview_started) % dizi_duration)
-                              if dizi_duration > 0 else None)
-            dizi_ready = dizi_duration <= 0
         items = []
         if self.cfg.get("loss_enabled", True):
             items.append((self._icon_sources[0], remaining, loss_duration, False,
                           self.overlay_preview or self._loss_icon_visible(now)))
-        if self.cfg.get("dizi_enabled", True):
-            items.append((self._icon_sources[1], dizi_remaining, dizi_duration, dizi_ready,
-                          self.overlay_preview or self.dizi_detector.visible))
         items.extend(self.catalog.icon_items(now, self.overlay_preview, self._icon_preview_started))
         strip = Image.new("RGBA", (max(1, len(items)*96-8), 88), (0, 0, 0, 0))
         for index, (source, value, duration, ready, visible) in enumerate(items):
@@ -2231,13 +2148,7 @@ class ReminderApp:
         self._update_summary()
 
     def select_roi(self):
-        if self.worker and self.worker.is_alive():
-            messagebox.showinfo("提示", "请先停止监测再重新框选。", parent=self.root)
-            return
-        shot = self.capture.full_screen()
-        RegionSelector(
-            self.root, shot, "框选敌方 Buff 整行", self._set_roi
-        )
+        self.catalog.setup_region('debuff')
 
     def _set_roi(self, box):
         self.cfg["loss_roi"] = list(map(int, box))
@@ -2367,8 +2278,8 @@ class ReminderApp:
         self.worker.start()
         self.start_btn.configure(text="停止监测")
         self.vars["monitor"].set("运行中")
-        if not self.dizi_detector.configured:
-            self.vars["dizi"].set("未设置")
+        if not self.catalog.engine.region("qishu"):
+            self.vars["dizi"].set("未设置共享奇术区")
             self.vars["dizi_repeat"].set("-")
 
     def stop_monitor(self):
@@ -2680,7 +2591,6 @@ class ReminderApp:
     def monitor_loop(self):
         next_global = 0.0
         next_track = 0.0
-        next_dizi = 0.0
         last_ui = 0.0
 
         while not self.stop_event.is_set():
@@ -2694,39 +2604,6 @@ class ReminderApp:
             loss_attempted = False
 
             try:
-                # 笛子：固定小区域独立检测，不参与失魂定位/追踪逻辑。
-                if (
-                    bool(self.cfg.get("dizi_enabled", True))
-                    and self.dizi_detector.configured
-                    and now >= next_dizi
-                ):
-                    next_dizi = now + 1.0 / max(1.0, float(self.cfg.get("dizi_hz", 20)))
-                    try:
-                        dizi_rgb = self.capture.grab_rgb(self.dizi_detector.roi)
-                        dizi_ratio = self.dizi_detector.ratio_from_rgb(dizi_rgb)
-                        dizi_state = self.dizi_detector.update(dizi_ratio, time.monotonic(),
-                                                               present=self.dizi_detector.present_in_rgb(dizi_rgb))
-                        self.messages.put({
-                            "type": "dizi_status",
-                            **dizi_state,
-                        })
-                        if dizi_state.get("event") in ("ready", "repeat"):
-                            self.messages.put({
-                                "type": "dizi_reminder",
-                                "repeat": dizi_state.get("event") == "repeat",
-                                "ratio": dizi_ratio,
-                            })
-                    except CaptureOccluded as de:
-                        self.messages.put({"type": "capture_blocked", "text": str(de)})
-                    except Exception as de:
-                        self.messages.put({
-                            "type": "dizi_status",
-                            "ready": False,
-                            "ratio": None,
-                            "repeat_remaining": None,
-                            "error": str(de),
-                        })
-
                 extra = self.catalog.engine.sample(self.capture, time.monotonic(), CaptureOccluded)
                 if extra is not None:
                     self.messages.put({"type": "catalog_status", "results": extra})

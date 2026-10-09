@@ -22,73 +22,125 @@ def synthetic(matcher, brightness=1):
     return rgb
 
 
-class CatalogTest(unittest.TestCase):
-    def test_other_bundled_skills_cannot_be_calibrated_as_this_skill(self):
-        skills = [s for s in load_catalog(ROOT) if s.engine == 'generic']
-        matchers = {s.id: IconMatcher(ROOT/s.icon) for s in skills}
-        for name, matcher in matchers.items():
-            for other, source in matchers.items():
-                if other == name:
-                    continue
-                with self.subTest(target=name, wrong_icon=other), self.assertRaises(ValueError):
-                    rgb = synthetic(source)
-                    matcher.calibrate(rgb, [0, 0, rgb.shape[1], rgb.shape[0]])
+def icon_row(matchers, order, brightness=None):
+    row = np.zeros((128, 480, 3), np.uint8)
+    for slot, name in enumerate(order):
+        rgb = synthetic(matchers[name], (brightness or {}).get(name, 1))
+        h, w = rgb.shape[:2]
+        row[10:10+h, 10+slot*100:10+slot*100+w] = rgb
+    return row
 
-    def test_all_requested_assets_load_and_calibrate_without_raw_materials(self):
+
+class CatalogTest(unittest.TestCase):
+    def test_catalog_categories_and_durations(self):
         skills = load_catalog(ROOT)
-        self.assertEqual({s.name: s.cd for s in skills if s.engine == 'generic'},
-                         {'威威易伤': 16, '真气失衡': 15, '骑龙回马': 12, '千灯一月': 40})
-        for skill in skills:
+        self.assertEqual({s.name: (s.cd, s.category) for s in skills if s.engine == 'generic'},
+                         {'威威易伤': (16, 'debuff'), '真气失衡': (15, 'debuff'),
+                          '骑龙回马': (12, 'qishu'), '千灯一月': (40, 'qishu')})
+        self.assertEqual(next(s.category for s in skills if s.id == 'loss'), 'debuff')
+        self.assertEqual(next(s.category for s in skills if s.id == 'dizi'), 'qishu')
+
+    def test_multiscale_source_matching_without_calibration(self):
+        for skill in load_catalog(ROOT):
             with self.subTest(skill=skill.name):
                 matcher = IconMatcher(ROOT/skill.icon)
-                rgb = synthetic(matcher)
-                calibration = matcher.calibrate(rgb, [0, 0, rgb.shape[1], rgb.shape[0]])
-                self.assertAlmostEqual(calibration['width'], 48, delta=2)
-                dark = matcher.match(synthetic(matcher, .3), calibration['width'])
+                found = matcher.match(synthetic(matcher))
+                self.assertGreater(found['score'], .9)
+                self.assertEqual(found['width'], 48)
+                dark = matcher.match(synthetic(matcher, .3), 48)
                 self.assertGreater(dark['score'], .9)
-                self.assertLess(dark['brightness']/calibration['brightness'], .4)
-                with self.assertRaises(ValueError):
-                    matcher.calibrate(np.zeros_like(rgb), [0, 0, 60, 60])
-                with self.assertRaises(ValueError):
-                    matcher.calibrate(np.full_like(rgb, 255), [0, 0, 60, 60])
+                self.assertLess(dark['brightness']/225, .4)
+                self.assertIsNone(matcher.match(np.zeros((128, 400, 3), np.uint8)))
+                self.assertIsNone(matcher.match(np.full((128, 400, 3), 255, np.uint8)))
 
-    def test_config_rejects_paths_outside_repo_duplicates_and_invalid_durations(self):
+    def test_two_frames_shared_by_category_search_all_icons_after_slot_reordering(self):
+        skills = load_catalog(ROOT)
+        cfg = {'monitored_skills': {s.id: True for s in skills},
+               'loss_roi': [-480, 0, 0, 128], 'qishu_roi': [0, 500, 480, 628],
+               # Old single-icon regions must never be captured.
+               'skill_calibrations': {'qilong': {'roi': [900,900,910,910]}},
+               'dizi_calibration': {'roi': [900,900,910,910]}}
+        engine = CatalogMonitor(ROOT, skills, cfg)
+        matchers = {s.id: IconMatcher(ROOT/s.icon) for s in skills}
+        debuff = icon_row(matchers, ['loss','weiwei','imbalance'])
+        qishu = icon_row(matchers, ['dizi','qilong','qiandeng'])
+        calls = []
+        class Capture:
+            blocked = False
+            def grab_rgb(self, roi):
+                calls.append(tuple(roi))
+                if roi[0] == -480:
+                    if self.blocked:
+                        raise CaptureOccluded('blocked')
+                    return debuff
+                return qishu
+        capture = Capture()
+        first = engine.sample(capture, 1, CaptureOccluded)
+        self.assertTrue(all(s['visible'] for s in first), first)
+        self.assertEqual(calls, [tuple(cfg['loss_roi']), tuple(cfg['qishu_roi'])])
+        second = engine.sample(capture, 1.2, CaptureOccluded)
+        ready = {s['id'] for s in second if s['event'] == 'ready'}
+        self.assertEqual(ready, {'dizi','qilong','qiandeng'})
+        # The same shared region is searched again, even when every icon changes slots.
+        debuff = icon_row(matchers, ['imbalance','loss','weiwei'])
+        qishu = icon_row(matchers, ['qiandeng','dizi','qilong'], {'qilong':.3})
+        engine.sample(capture, 1.4, CaptureOccluded)
+        moved = {s['id']:s for s in engine.sample(capture, 1.6, CaptureOccluded)}
+        self.assertTrue(all(s['visible'] for s in moved.values()), moved)
+        self.assertAlmostEqual(moved['qilong']['remaining'], 11.8)
+        self.assertTrue(moved['dizi']['ready'])
+        self.assertTrue(moved['qiandeng']['ready'])
+        self.assertIsNone(moved['qiandeng']['remaining'])
+        # A blocked Debuff region does not block the Qishu region or infer any cast.
+        capture.blocked = True
+        blocked = {s['id']:s for s in engine.sample(capture, 1.8, CaptureOccluded)}
+        self.assertIn('error', blocked['weiwei'])
+        self.assertTrue(blocked['dizi']['visible'])
+        # Blank HUD is missing, not skill usage; reacquiring dark also cannot infer usage.
+        qishu = np.zeros_like(qishu)
+        missing = engine.sample(capture, 2, CaptureOccluded)
+        self.assertTrue(all(not s['visible'] for s in missing))
+        qishu = icon_row(matchers, ['dizi','qilong','qiandeng'], {'dizi':.3,'qilong':.3,'qiandeng':.3})
+        engine.sample(capture, 2.2, CaptureOccluded)
+        reacquired = {s['id']:s for s in engine.sample(capture, 2.4, CaptureOccluded)}
+        self.assertIsNone(reacquired['dizi']['remaining'])
+        self.assertIsNone(reacquired['qiandeng']['remaining'])
+        # The legacy loss tracker uses exactly the same Debuff selection, not a third ROI.
+        import buff_reminder_v2_dizi_hotkey as app
+        tracker = app.LossTracker(dict(app.DEFAULT_CONFIG, loss_roi=cfg['loss_roi']))
+        capture.blocked = False
+        crop, found = tracker.global_acquire(capture)
+        self.assertIsNotNone(crop)
+        self.assertIsNotNone(found)
+        self.assertEqual(calls[-1], tuple(cfg['loss_roi']))
+
+    def test_missing_category_region_does_not_use_obsolete_per_skill_regions(self):
+        skills = load_catalog(ROOT)
+        cfg = {'loss_enabled':False, 'dizi_enabled':False, 'monitored_skills':{'qilong':True},
+               'skill_calibrations':{'qilong':{'roi':[0,0,100,100]}}}
+        engine = CatalogMonitor(ROOT, skills, cfg)
+        class Capture:
+            def grab_rgb(self, roi):
+                raise AssertionError('must not capture an obsolete ROI')
+        result = engine.sample(Capture(), 1, CaptureOccluded)
+        self.assertIn('error', result[0])
+        self.assertIsNone(engine.region('qishu'))
+
+    def test_config_rejects_external_paths_and_inconsistent_categories(self):
         source = json.loads((ROOT/'skills.json').read_text())
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             for change in ({'icon': '../secret.png'}, {'icon': '/tmp/secret.png'},
-                           {'cd': 0}, {'cd': float('nan')}, {'id': '../unsafe'}):
+                           {'cd': 0}, {'cd': float('nan')}, {'id': '../unsafe'},
+                           {'category':'qishu'}, {'category':'other'}):
                 row = dict(source['skills'][0], **change)
-                (root/'skills.json').write_text(json.dumps({'version': 1, 'skills': [row]}))
+                (root/'skills.json').write_text(json.dumps({'version': 2, 'skills': [row]}))
                 with self.subTest(change=change), self.assertRaises(ValueError):
                     load_catalog(root)
-
-    def test_independent_regions_and_occlusion_do_not_cast_other_skills(self):
-        skills = [s for s in load_catalog(ROOT) if s.kind == 'qishu' and s.engine == 'generic']
-        cfg = {'monitored_skills': {s.id: True for s in skills}, 'skill_calibrations': {}}
-        engine = CatalogMonitor(ROOT, skills, cfg)
-        frames = {}
-        for i, skill in enumerate(skills):
-            rgb = synthetic(engine.matchers[skill.id])
-            roi = [i*100, 0, i*100+rgb.shape[1], rgb.shape[0]]
-            calibration = engine.matchers[skill.id].calibrate(rgb, roi)
-            cfg['skill_calibrations'][skill.id] = dict(calibration, icon=skill.icon)
-            frames[roi[0]] = rgb
-        class Capture:
-            def grab_rgb(self, roi):
-                if frames[roi[0]] is None:
-                    raise CaptureOccluded('blocked')
-                return frames[roi[0]]
-        engine.sample(Capture(), 1, CaptureOccluded)
-        states = engine.sample(Capture(), 1.2, CaptureOccluded)
-        self.assertEqual([s['event'] for s in states], ['ready', 'ready'])
-        frames[0] = None
-        frames[100] = (frames[100]*.3).astype(np.uint8)
-        engine.sample(Capture(), 1.4, CaptureOccluded)
-        states = engine.sample(Capture(), 1.6, CaptureOccluded)
-        self.assertIn('error', states[0])
-        self.assertIsNone(engine.states[skills[0].id].started)
-        self.assertAlmostEqual(states[1]['remaining'], 39.8)
+            row = dict(source['skills'][0]); del row['category']
+            (root/'skills.json').write_text(json.dumps({'version':2, 'skills':[row]}))
+            with self.assertRaises(ValueError):
+                load_catalog(root)
 
 
 class StateTest(unittest.TestCase):

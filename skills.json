@@ -1,14 +1,15 @@
 {
-  "version": 1,
+  "version": 2,
   "skills": [
     {
       "id": "loss",
       "name": "失魂落魄",
-      "school": "流派归属待确认",
+      "school": "尘尘",
       "kind": "buff",
       "cd": 21,
       "icon": "yysls_export/debuff_shihunluopo.png",
-      "engine": "legacy_loss"
+      "engine": "legacy_loss",
+      "category": "debuff"
     },
     {
       "id": "dizi",
@@ -17,15 +18,17 @@
       "kind": "qishu",
       "cd": 24,
       "icon": "yysls_export/dizi.png",
-      "engine": "legacy_dizi"
+      "engine": "legacy_dizi",
+      "category": "qishu"
     },
     {
       "id": "weiwei",
       "name": "威威易伤",
-      "school": "威威（用户称呼）",
+      "school": "威威",
       "kind": "buff",
       "cd": 16,
-      "icon": "assets/icons/buff_fight_yishang.png"
+      "icon": "assets/icons/buff_fight_yishang.png",
+      "category": "debuff"
     },
     {
       "id": "imbalance",
@@ -33,7 +36,8 @@
       "school": "无名",
       "kind": "buff",
       "cd": 15,
-      "icon": "assets/icons/skill_tq_2_1_1.png"
+      "icon": "assets/icons/skill_tq_2_1_1.png",
+      "category": "debuff"
     },
     {
       "id": "qilong",
@@ -41,7 +45,8 @@
       "school": "通用奇术",
       "kind": "qishu",
       "cd": 12,
-      "icon": "assets/icons/skill_qishu_huimaqiang.png"
+      "icon": "assets/icons/skill_qishu_huimaqiang.png",
+      "category": "qishu"
     },
     {
       "id": "qiandeng",
@@ -49,7 +54,8 @@
       "school": "通用奇术",
       "kind": "qishu",
       "cd": 40,
-      "icon": "assets/icons/skill_qishu_kongmingdeng.png"
+      "icon": "assets/icons/skill_qishu_kongmingdeng.png",
+      "category": "qishu"
     }
   ]
 }
