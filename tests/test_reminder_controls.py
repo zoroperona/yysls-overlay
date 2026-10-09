@@ -84,6 +84,7 @@ class ReminderControlsTest(unittest.TestCase):
             APP_VERSION="test", load_config=lambda: {}, ScreenCapture=Mock(),
             LossTracker=Mock(side_effect=FileNotFoundError("missing template")),
             RefreshDetector=Mock(), DiziDetector=Mock(), queue=Mock(),
+            CatalogUI=Mock(), RegionSelector=Mock(),
         )
         self.app._build_ui = Mock()
         self.app._update_summary = Mock()

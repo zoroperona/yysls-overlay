@@ -19,3 +19,5 @@ videos/
 artifacts/
 *.mp4
 *.mov
+
+dist/

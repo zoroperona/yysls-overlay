@@ -1,0 +1,55 @@
+{
+  "version": 1,
+  "skills": [
+    {
+      "id": "loss",
+      "name": "失魂落魄",
+      "school": "流派归属待确认",
+      "kind": "buff",
+      "cd": 21,
+      "icon": "yysls_export/debuff_shihunluopo.png",
+      "engine": "legacy_loss"
+    },
+    {
+      "id": "dizi",
+      "name": "笛子",
+      "school": "通用奇术",
+      "kind": "qishu",
+      "cd": 24,
+      "icon": "yysls_export/dizi.png",
+      "engine": "legacy_dizi"
+    },
+    {
+      "id": "weiwei",
+      "name": "威威易伤",
+      "school": "威威（用户称呼）",
+      "kind": "buff",
+      "cd": 16,
+      "icon": "assets/icons/buff_fight_yishang.png"
+    },
+    {
+      "id": "imbalance",
+      "name": "真气失衡",
+      "school": "无名",
+      "kind": "buff",
+      "cd": 15,
+      "icon": "assets/icons/skill_tq_2_1_1.png"
+    },
+    {
+      "id": "qilong",
+      "name": "骑龙回马",
+      "school": "通用奇术",
+      "kind": "qishu",
+      "cd": 12,
+      "icon": "assets/icons/skill_qishu_huimaqiang.png"
+    },
+    {
+      "id": "qiandeng",
+      "name": "千灯一月",
+      "school": "通用奇术",
+      "kind": "qishu",
+      "cd": 40,
+      "icon": "assets/icons/skill_qishu_kongmingdeng.png"
+    }
+  ]
+}

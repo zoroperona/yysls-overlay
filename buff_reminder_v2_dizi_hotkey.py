@@ -24,6 +24,7 @@ from reminder_assets import OriginalAssets
 from reminder_presentation import format_reminder, cooldown_icon, dizi_icon_state
 from reminder_capture import CaptureGuard, CaptureOccluded, exclude_window_from_capture
 from reminder_timing import RelativeRefreshDetector
+from reminder_catalog_ui import CatalogUI
 
 try:
     import mss
@@ -40,7 +41,7 @@ from tkinter import colorchooser, filedialog, messagebox, ttk
 
 
 APP_NAME = "尘Buff提醒器_追踪明度版"
-APP_VERSION = "v2.5 图标可见性 + 刷新检测"
+APP_VERSION = "v2.6 多技能监控"
 ICON_W = 43
 ICON_H = 63
 
@@ -1519,6 +1520,7 @@ class ReminderApp:
         self.root.minsize(730, 680)
 
         self.cfg = load_config()
+        self.catalog = CatalogUI(self, ROOT, save_config, RegionSelector)
         self.capture = ScreenCapture()
         # Template files are optional for configuring and testing the reminder UI.
         # Monitoring still validates them before starting its worker.
@@ -1574,7 +1576,7 @@ class ReminderApp:
 
         title = ttk.Label(
             outer,
-            text="失魂落魄 + 笛子｜原图识别、明度监测与音效提醒",
+            text="多技能监控｜Buff 持续时间、奇术冷却与音效提醒",
             font=("Microsoft YaHei UI", 13, "bold")
         )
         title.pack(anchor="w")
@@ -1583,6 +1585,7 @@ class ReminderApp:
         actions.pack(fill="x", pady=(12, 8))
         self.start_btn = ttk.Button(actions, text="开始监测", command=self.toggle)
         self.start_btn.pack(side="left")
+        ttk.Button(actions, text="监控列表", command=self.catalog.open).pack(side="left", padx=6)
         ttk.Button(actions, text="框选敌方 Buff 栏", command=self.select_roi).pack(
             side="left", padx=6
         )
@@ -1871,6 +1874,7 @@ class ReminderApp:
         if not self.pause_event.is_set():
             # Pause all detection and all reminder delivery.
             self.pause_event.set()
+            self.catalog.engine.reset()
             self.axis_start = None
             self.axis_warned = False
             self.birth_count = 0
@@ -1899,6 +1903,7 @@ class ReminderApp:
             self.axis_warned = False
             self.birth_count = 0
             self.birth_first_t = None
+            self.catalog.engine.reset()
             self.pause_event.clear()
             self.vars["monitor"].set("运行中")
             self.vars["identity"].set("正在全局搜索")
@@ -2163,16 +2168,20 @@ class ReminderApp:
             dizi_remaining = (dizi_duration-((now-self._icon_preview_started) % dizi_duration)
                               if dizi_duration > 0 else None)
             dizi_ready = dizi_duration <= 0
-        strip = Image.new("RGBA", (184, 88), (0, 0, 0, 0))
-        for index, (value, duration, ready) in enumerate(((remaining, loss_duration, False),
-                                                        (dizi_remaining, dizi_duration, dizi_ready))):
-            if not self.overlay_preview:
-                if index == 0 and not self._loss_icon_visible(now):
-                    continue
-                if index == 1 and not self.dizi_detector.visible:
-                    continue
-            unknown = index == 0 and not self.overlay_preview and (value is None or value <= 0)
-            icon = cooldown_icon(self._icon_sources[index], self.cfg.get("icon_color", "#b95739"),
+        items = []
+        if self.cfg.get("loss_enabled", True):
+            items.append((self._icon_sources[0], remaining, loss_duration, False,
+                          self.overlay_preview or self._loss_icon_visible(now)))
+        if self.cfg.get("dizi_enabled", True):
+            items.append((self._icon_sources[1], dizi_remaining, dizi_duration, dizi_ready,
+                          self.overlay_preview or self.dizi_detector.visible))
+        items.extend(self.catalog.icon_items(now, self.overlay_preview, self._icon_preview_started))
+        strip = Image.new("RGBA", (max(1, len(items)*96-8), 88), (0, 0, 0, 0))
+        for index, (source, value, duration, ready, visible) in enumerate(items):
+            if not visible:
+                continue
+            unknown = not self.overlay_preview and not ready and (value is None or value <= 0)
+            icon = cooldown_icon(source, self.cfg.get("icon_color", "#b95739"),
                                  value, duration, self.cfg.get("icon_numbers", True), ready=ready, unknown=unknown)
             strip.paste(icon, (index*96, 0))
         self._icon_photo = ImageTk.PhotoImage(strip)
@@ -2246,6 +2255,7 @@ class ReminderApp:
         if was_running:
             self.stop_monitor()
         self.cfg = cfg
+        self.catalog.apply_defaults()
         save_config(self.cfg)
         try:
             self.tracker = LossTracker(self.cfg)
@@ -2314,6 +2324,11 @@ class ReminderApp:
     def start_monitor(self):
         self.apply_quick()
         self.apply_dizi_quick()
+        try:
+            self.catalog.validate_start()
+        except ValueError as exc:
+            messagebox.showerror("监控列表", str(exc), parent=self.root)
+            return
         if self.cfg["refresh_low"] >= self.cfg["refresh_high"]:
             messagebox.showerror(
                 "参数错误",
@@ -2323,7 +2338,7 @@ class ReminderApp:
             return
 
         roi = self.cfg.get("loss_roi", [])
-        if len(roi) != 4 or roi[2] - roi[0] < ICON_W or roi[3] - roi[1] < ICON_H:
+        if self.cfg.get("loss_enabled", True) and (len(roi) != 4 or roi[2] - roi[0] < ICON_W or roi[3] - roi[1] < ICON_H):
             messagebox.showerror(
                 "搜索区无效", "请先框选敌方 Buff 整行。", parent=self.root
             )
@@ -2347,6 +2362,7 @@ class ReminderApp:
         self.birth_first_t = None
         self.dizi_detector = DiziDetector(self.cfg)
         self.dizi_detector.reset_state()
+        self.monitor_started = time.monotonic()
         self.worker = threading.Thread(target=self.monitor_loop, daemon=True)
         self.worker.start()
         self.start_btn.configure(text="停止监测")
@@ -2363,6 +2379,9 @@ class ReminderApp:
         self.worker = None
         self.start_btn.configure(text="开始监测")
         self.vars["monitor"].set("已停止")
+        self.catalog.engine.reset()
+        if self.overlay is not None and not self.overlay_preview:
+            self._hide_overlay(self.overlay)
 
     def manual_axis(self):
         self.axis_start = time.monotonic()
@@ -2379,6 +2398,14 @@ class ReminderApp:
         self.birth_count = 0
         self.birth_first_t = None
         self.messages.put({"type": "event", "text": "理论时间轴已清空"})
+
+    def _play_catalog_audio(self):
+        if winsound is not None:
+            try:
+                winsound.PlaySound(str(ROOT / "assets/audio/loss_electronic.wav"),
+                                   winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT)
+            except Exception:
+                pass
 
     def _reminder_audio(self):
         self._play_audio("custom_audio")
@@ -2700,6 +2727,12 @@ class ReminderApp:
                             "error": str(de),
                         })
 
+                extra = self.catalog.engine.sample(self.capture, time.monotonic(), CaptureOccluded)
+                if extra is not None:
+                    self.messages.put({"type": "catalog_status", "results": extra})
+                if not self.cfg.get("loss_enabled", True):
+                    time.sleep(.01)
+                    continue
                 if self.tracker.active:
                     if now >= next_track:
                         next_track = now + 1.0 / max(1.0, float(self.cfg["track_hz"]))
@@ -2798,8 +2831,14 @@ class ReminderApp:
                 # Paused means fully quiet: discard stale status/events that were
                 # already queued immediately before the hotkey was pressed.
                 if self.pause_event.is_set() and kind in (
-                    "status", "event", "reminder", "dizi_status", "dizi_reminder", "capture_blocked"
+                    "status", "event", "reminder", "dizi_status", "dizi_reminder", "capture_blocked", "catalog_status"
                 ):
+                    continue
+
+                if kind == "catalog_status":
+                    if self.worker and self.worker.is_alive():
+                        self.catalog.handle([r for r in msg["results"]
+                                             if r["observed"] >= self.monitor_started])
                     continue
 
                 if kind == "status":
@@ -2930,7 +2969,12 @@ def main():
                 pass
 
     root = tk.Tk()
-    app = ReminderApp(root)
+    try:
+        app = ReminderApp(root)
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        messagebox.showerror("启动失败", f"请检查 skills.json 和资源是否完整：\n{exc}", parent=root)
+        root.destroy()
+        return
     root.mainloop()
 
 
