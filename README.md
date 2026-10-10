@@ -1,6 +1,8 @@
 # 燕云浮层提醒器
 
 《燕云十六声》Windows 桌面辅助工具。识别屏幕上的 Buff 和奇术图标，在独立浮层显示倒计时并播放提醒音。支持同时勾选多个项目，共享 Debuff 栏区和奇术区、各自独立计时；支持选择是否让截图 / 录屏捕获浮层。
+<img width="708" height="692" alt="image" src="https://github.com/user-attachments/assets/4b6bb9ca-5443-495f-9d57-3dd17693d4c4" />
+
 
 ## 已支持的流派与技能
 
