@@ -10,7 +10,7 @@ from reminder_catalog import load_catalog
 
 def release_files(root=ROOT):
     fixed = [
-        'README.md', 'ASSETS.md', 'docs/reminder-controls.md',
+        'README.md', 'LICENSE', 'ASSETS.md', 'docs/reminder-controls.md',
         'skills.json', 'requirements.txt', 'start-windows.bat',
         'buff_reminder_v2_dizi_hotkey.py', 'reminder_assets.py',
         'reminder_capture.py', 'reminder_presentation.py', 'reminder_timing.py',
